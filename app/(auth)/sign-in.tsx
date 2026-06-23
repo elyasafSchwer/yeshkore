@@ -12,6 +12,8 @@ import { Link } from 'expo-router';
 import { useAuth } from '@/context/auth';
 import { isValidUsername } from '@/lib/username';
 import { colors } from '@/lib/theme';
+import { logEvent } from '@/lib/analytics';
+import { supabase } from '@/lib/supabase';
 
 export default function SignIn() {
   const { signIn } = useAuth();
@@ -34,6 +36,10 @@ export default function SignIn() {
     setLoading(true);
     try {
       await signIn(username.trim(), password);
+      const { data } = await supabase.auth.getSession();
+      if (data.session?.user?.id) {
+        logEvent('gabai_login', { gabai_id: data.session.user.id });
+      }
     } catch (e: any) {
       setError(e.message || 'התחברות נכשלה');
     } finally {

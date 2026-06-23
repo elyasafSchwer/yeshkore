@@ -1,17 +1,22 @@
 import 'react-native-gesture-handler';
 import { useEffect } from 'react';
-import { I18nManager } from 'react-native';
+import { I18nManager, Platform } from 'react-native';
 import { Stack, SplashScreen } from 'expo-router';
 import { GestureHandlerRootView } from 'react-native-gesture-handler';
 import { PaperProvider } from 'react-native-paper';
 import { AuthProvider, useAuth } from '@/context/auth';
 import { theme } from '@/lib/theme';
 import InstructionsModal from '@/components/InstructionsModal';
+import { logEvent } from '@/lib/analytics';
 
 SplashScreen.preventAutoHideAsync();
 I18nManager.forceRTL(true);
 
 export default function RootLayout() {
+  useEffect(() => {
+    logEvent('app_open', { platform: Platform.OS });
+  }, []);
+
   return (
     <GestureHandlerRootView style={{ flex: 1 }}>
       <PaperProvider theme={theme}>
@@ -46,9 +51,7 @@ function RootNavigator() {
       <Stack.Protected guard={isAuthenticated && !hasCompletedOnboarding}>
         <Stack.Screen name="(onboarding)" />
       </Stack.Protected>
-      <Stack.Protected guard={isAuthenticated && hasCompletedOnboarding}>
-        <Stack.Screen name="(app)" />
-      </Stack.Protected>
+      <Stack.Screen name="(app)" />
     </Stack>
   );
 }

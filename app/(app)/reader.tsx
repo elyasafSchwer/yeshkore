@@ -1,4 +1,4 @@
-import { useState, useCallback, useEffect } from 'react';
+import { useState, useCallback, useEffect, useRef } from 'react';
 import {
   View,
   StyleSheet,
@@ -25,8 +25,12 @@ import { supabase } from '@/lib/supabase';
 import { NUSACH_OPTIONS } from '@/lib/nusach';
 import { getShabbatThreshold } from '@/lib/shabbat';
 import { colors } from '@/lib/theme';
+import { logEvent } from '@/lib/analytics';
 
 const STORAGE_KEY = 'last_searched_location';
+const NUSACH_STORAGE_KEY = 'nusach_filter';
+const JERUSALEM_LAT = 31.7683;
+const JERUSALEM_LON = 35.2137;
 
 type SlotResult = {
   id: string;
@@ -118,8 +122,15 @@ type Section = {
 
 type LocationSource = 'last_search' | 'manual' | null;
 
-function ExpandableNote({ text }: { text: string }) {
-  const [expanded, setExpanded] = useState(false);
+async function fetchNominatim(query: string): Promise<{ lat: string; lon: string }[]> {
+  const response = await fetch(
+    `https://nominatim.openstreetmap.org/search?q=${encodeURIComponent(query)}&format=json&limit=1`,
+    { headers: { 'User-Agent': 'YeshkoreApp/1.0' } },
+  );
+  return response.json();
+}
+
+function ExpandableNote({ text }: { text: string }) {  const [expanded, setExpanded] = useState(false);
   return (
     <Pressable onPress={() => setExpanded((v) => !v)}>
       <Text
@@ -134,7 +145,7 @@ function ExpandableNote({ text }: { text: string }) {
 }
 
 export default function ReaderDashboard() {
-  const { profile, username, signOut } = useAuth();
+  const { profile, username, signOut, session } = useAuth();
   const router = useRouter();
 
   const [locationQuery, setLocationQuery] = useState('');
@@ -146,8 +157,14 @@ export default function ReaderDashboard() {
   const [initialLoading, setInitialLoading] = useState(true);
   const [sections, setSections] = useState<Section[]>([]);
   const [nusachFilter, setNusachFilter] = useState<string[]>([]);
+  const nusachFilterRef = useRef<string[]>([]);
+  const hasHydrated = useRef(false);
   const [allResults, setAllResults] = useState<SlotResult[]>([]);
   const [error, setError] = useState('');
+
+  useEffect(() => {
+    nusachFilterRef.current = nusachFilter;
+  }, [nusachFilter]);
 
   const buildSections = useCallback(
     (results: SlotResult[], filter: string[]) => {
@@ -209,7 +226,7 @@ export default function ReaderDashboard() {
         return;
       }
 
-      const userNusach = profile?.nusach ?? [];
+      const userNusach = profile?.nusach ?? nusachFilterRef.current;
       const threshold = getShabbatThreshold();
       const results: SlotResult[] = [];
       for (const row of data as unknown as RawMinyanSlot[]) {
@@ -243,21 +260,48 @@ export default function ReaderDashboard() {
       }
 
       setAllResults(results);
-      buildSections(results, nusachFilter);
+      buildSections(results, nusachFilterRef.current);
       setLoadingSlots(false);
     },
-    [profile, nusachFilter, buildSections],
+    [profile, buildSections],
   );
 
   useEffect(() => {
+    if (session) return;
+    if (!hasHydrated.current) return;
+    setAllResults([]);
+    setSections([]);
+    setLocationQuery('');
+    setUserLat(JERUSALEM_LAT);
+    setUserLon(JERUSALEM_LON);
+    setLocationSource('last_search');
+    fetchSlots(JERUSALEM_LAT, JERUSALEM_LON);
+  }, [session, fetchSlots]);
+
+  useEffect(() => {
+    if (hasHydrated.current) return;
+    hasHydrated.current = true;
+
     const loadInitialLocation = async () => {
+      try {
+        const storedNusach = await AsyncStorage.getItem(NUSACH_STORAGE_KEY);
+        if (storedNusach && !profile) {
+          const parsed = JSON.parse(storedNusach);
+          if (Array.isArray(parsed)) {
+            nusachFilterRef.current = parsed;
+            setNusachFilter(parsed);
+          }
+        }
+      } catch {}
+
       try {
         const stored = await AsyncStorage.getItem(STORAGE_KEY);
         if (stored) {
-          const { lat, lon } = JSON.parse(stored);
+          const { lat, lon, query } = JSON.parse(stored);
           if (typeof lat === 'number' && typeof lon === 'number') {
             setUserLat(lat);
             setUserLon(lon);
+            setLocationQuery(query ?? '');
             setLocationSource('last_search');
             setInitialLoading(false);
             fetchSlots(lat, lon);
@@ -266,7 +310,12 @@ export default function ReaderDashboard() {
         }
       } catch {}
 
+      setUserLat(JERUSALEM_LAT);
+      setUserLon(JERUSALEM_LON);
+      setLocationSource('last_search');
+      setLocationQuery('');
       setInitialLoading(false);
+      fetchSlots(JERUSALEM_LAT, JERUSALEM_LON);
     };
 
     loadInitialLocation();
@@ -279,12 +328,20 @@ export default function ReaderDashboard() {
     }
     setError('');
     setSearching(true);
+    logEvent('location_search', { search_term: locationQuery.trim() });
     try {
-      const response = await fetch(
-        `https://nominatim.openstreetmap.org/search?q=${encodeURIComponent(locationQuery.trim())}&format=json&limit=1`,
-        { headers: { 'User-Agent': 'YeshkoreApp/1.0' } },
-      );
-      const data = await response.json();
+      const query = locationQuery.trim();
+      let data = await fetchNominatim(query);
+
+      if (data.length === 0) {
+        const fallback = query.includes(',')
+          ? query.split(',').slice(1).join(',').trim()
+          : null;
+        if (fallback) {
+          data = await fetchNominatim(fallback);
+        }
+      }
+
       if (data.length === 0) {
         setError('לא נמצאה כתובת. נסה שוב');
         setSearching(false);
@@ -297,7 +354,7 @@ export default function ReaderDashboard() {
       setLocationSource('manual');
       setSearching(false);
 
-      await AsyncStorage.setItem(STORAGE_KEY, JSON.stringify({ lat, lon }));
+      await AsyncStorage.setItem(STORAGE_KEY, JSON.stringify({ lat, lon, query }));
 
       fetchSlots(lat, lon);
     } catch {
@@ -308,6 +365,11 @@ export default function ReaderDashboard() {
 
   const messageGabbai = (slot: SlotResult) => {
     if (!slot.gabbai_phone) return;
+    logEvent('whatsapp_click', {
+      reading_slot_id: slot.reading_slot_id,
+      parasha_name: slot.parasha_name,
+      synagogue_name: slot.synagogue_name,
+    });
     const formatted = formatPhoneForWhatsApp(slot.gabbai_phone);
     const message = `שלום, ראיתי באפליקציית ישקורא שאתם מחפשים בעל קריאה ל${slot.parasha_name}. האם רלוונטי?`;
     Linking.openURL(`https://wa.me/${formatted}?text=${encodeURIComponent(message)}`);
@@ -326,14 +388,36 @@ export default function ReaderDashboard() {
       behavior={Platform.OS === 'ios' ? 'padding' : 'height'}
     >
       <View style={styles.header}>
-        <Text variant="headlineSmall" style={styles.title}>
-          שלום, {username}
-        </Text>
+        {session ? (
+          <Text variant="headlineSmall" style={styles.title}>
+            שלום{username ? `, ${username}` : ''}
+          </Text>
+        ) : (
+            <View style={{ flexDirection: 'row', alignItems: 'center', justifyContent: 'center', gap: 8 }}>
+              <Text variant="bodyMedium" style={styles.emptyText}>
+                להוספת קריאות ללוח
+              </Text>
+              <Button
+                  mode="contained"
+                  compact
+                  onPress={() => router.push('/(auth)/sign-in')}
+                  style={styles.claimButton}
+                  contentStyle={{ height: 32 }}
+                  labelStyle={{ marginVertical: 0, fontSize: 13 }}
+              >
+                התחבר כגבאי
+              </Button>
+            </View>
+        )}
         <View style={styles.headerActions}>
-          <IconButton icon="cog" onPress={() => router.push('/(app)/settings')} />
-          <Button mode="text" onPress={signOut} compact>
-            התנתקות
-          </Button>
+          {session && (
+            <>
+              <IconButton icon="cog" onPress={() => router.push('/(app)/settings')} />
+              <Button mode="text" onPress={signOut} compact>
+                התנתקות
+              </Button>
+            </>
+          )}
         </View>
       </View>
 
@@ -347,6 +431,7 @@ export default function ReaderDashboard() {
             onChangeText={setLocationQuery}
             mode="outlined"
             placeholder="לדוגמה: פתח תקווה, רוטשילד"
+            placeholderTextColor="#888"
             style={styles.searchInput}
           />
           <Button
@@ -374,28 +459,41 @@ export default function ReaderDashboard() {
 
       {userLat !== null && (
         <View style={styles.filterSection}>
-          <Text variant="labelLarge" style={styles.filterLabel}>
-            סנן לפי נוסח:
-          </Text>
-          <View style={styles.filterChips}>
-            {NUSACH_OPTIONS.map((n) => (
-              <Chip
-                key={n}
-                selected={nusachFilter.includes(n)}
-                onPress={() => {
-                  const next = nusachFilter.includes(n)
-                    ? nusachFilter.filter((x) => x !== n)
-                    : [...nusachFilter, n];
-                  setNusachFilter(next);
-                  buildSections(allResults, next);
-                }}
-                showSelectedCheck
-                compact
-                style={styles.filterChip}
-              >
-                {n}
-              </Chip>
-            ))}
+          <View style={styles.filterRow}>
+            <Text variant="labelLarge" style={styles.filterLabel}>
+              סנן לפי נוסח:
+            </Text>
+            <View style={styles.filterChips}>
+              {NUSACH_OPTIONS.map((n) => {
+                const selected = nusachFilter.includes(n);
+                return (
+                  <Pressable
+                    key={n}
+                    onPress={() => {
+                      const next = selected
+                        ? nusachFilter.filter((x) => x !== n)
+                        : [...nusachFilter, n];
+                      setNusachFilter(next);
+                      buildSections(allResults, next);
+                      if (!profile) {
+                        AsyncStorage.setItem(NUSACH_STORAGE_KEY, JSON.stringify(next)).catch(() => {});
+                      }
+                    }}
+                    style={[
+                      styles.filterChip,
+                      selected ? styles.filterChipSelected : styles.filterChipUnselected,
+                    ]}
+                  >
+                    <Text
+                      variant="labelMedium"
+                      style={selected ? styles.filterChipTextSelected : styles.filterChipText}
+                    >
+                      {n}
+                    </Text>
+                  </Pressable>
+                );
+              })}
+            </View>
           </View>
         </View>
       )}
@@ -496,7 +594,7 @@ const styles = StyleSheet.create({
     alignItems: 'center',
     paddingHorizontal: 24,
     paddingTop: 60,
-    paddingBottom: 16,
+    paddingBottom: 8,
     backgroundColor: colors.parchmentLight,
     elevation: 2,
   },
@@ -587,25 +685,49 @@ const styles = StyleSheet.create({
     marginTop: 4,
   },
   claimButton: {
-    marginTop: 12,
+    marginTop: 0,
   },
   filterSection: {
     paddingHorizontal: 16,
-    paddingVertical: 10,
+    paddingVertical: 8,
     backgroundColor: colors.parchmentLight,
     borderBottomWidth: 1,
     borderBottomColor: '#C9B99A',
   },
+  filterRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+  },
   filterLabel: {
-    marginBottom: 6,
+    marginEnd: 6,
+    flexShrink: 0,
   },
   filterChips: {
+    flex: 1,
     flexDirection: 'row',
-    flexWrap: 'wrap',
-    gap: 6,
+    flexWrap: 'nowrap',
+    gap: 4,
   },
   filterChip: {
-    marginBottom: 2,
+    borderRadius: 16,
+    paddingHorizontal: 8,
+    paddingVertical: 3,
+    borderWidth: 1.5,
+  },
+  filterChipSelected: {
+    borderColor: colors.green,
+  },
+  filterChipUnselected: {
+    borderColor: 'transparent',
+  },
+  filterChipText: {
+    color: colors.text,
+    fontSize: 11,
+  },
+  filterChipTextSelected: {
+    color: colors.green,
+    fontWeight: 'bold',
+    fontSize: 11,
   },
   nusachRow: {
     flexDirection: 'row',

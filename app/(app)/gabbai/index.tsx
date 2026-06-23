@@ -760,11 +760,17 @@ function ExpandableNote({ text }: { text: string }) {
 }
 
 export default function GabbaiDashboard() {
-  const { profile, username, signOut } = useAuth();
+  const { profile, username, signOut, session } = useAuth();
   const router = useRouter();
   const [slots, setSlots] = useState<ReadingSlotWithMinyanim[]>([]);
   const [loading, setLoading] = useState(true);
   const [addModalVisible, setAddModalVisible] = useState(false);
+
+  useEffect(() => {
+    if (!session) {
+      router.replace('/(app)/reader');
+    }
+  }, [session, router]);
 
   const fetchSlots = useCallback(async () => {
     if (!profile) return;
@@ -956,15 +962,17 @@ export default function GabbaiDashboard() {
         onPress={() => setAddModalVisible(true)}
       />
 
-      <AddSlotModal
-        visible={addModalVisible}
-        userId={profile!.id}
-        onDismiss={() => setAddModalVisible(false)}
-        onCreated={() => {
-          setAddModalVisible(false);
-          fetchSlots();
-        }}
-      />
+      {profile && (
+        <AddSlotModal
+          visible={addModalVisible}
+          userId={profile.id}
+          onDismiss={() => setAddModalVisible(false)}
+          onCreated={() => {
+            setAddModalVisible(false);
+            fetchSlots();
+          }}
+        />
+      )}
     </View>
   );
 }

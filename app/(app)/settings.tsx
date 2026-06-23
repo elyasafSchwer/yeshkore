@@ -11,17 +11,12 @@ import {
   TextInput,
   Button,
   HelperText,
-  SegmentedButtons,
   IconButton,
   Surface,
-  Chip,
 } from 'react-native-paper';
 import { useRouter } from 'expo-router';
 import { useAuth } from '@/context/auth';
-import { NUSACH_OPTIONS } from '@/lib/nusach';
 import { colors } from '@/lib/theme';
-
-type UserRole = 'gabbai' | 'baal_kriya';
 
 type NominatimResult = {
   lat: string;
@@ -34,7 +29,6 @@ export default function SettingsScreen() {
   const router = useRouter();
 
   const [synagogueName, setSynagogueName] = useState(profile?.synagogue_name ?? '');
-  const [role, setRole] = useState<UserRole>(profile?.role ?? 'baal_kriya');
   const [locationQuery, setLocationQuery] = useState('');
   const [locationName, setLocationName] = useState(profile?.address ?? '');
   const [latitude, setLatitude] = useState<number | null>(profile?.latitude ?? null);
@@ -42,17 +36,15 @@ export default function SettingsScreen() {
   const [phone, setPhone] = useState(profile?.phone ?? '');
   const [saving, setSaving] = useState(false);
   const [searching, setSearching] = useState(false);
-  const [selectedNusach, setSelectedNusach] = useState<string[]>(profile?.nusach ?? []);
-  const [error, setError] = useState('');
-
-  const isGabbai = role === 'gabbai';
+  const [searchError, setSearchError] = useState('');
+  const [saveError, setSaveError] = useState('');
 
   const searchLocation = async () => {
     if (!locationQuery.trim()) {
-      setError('הכנס כתובת לחיפוש');
+      setSearchError('הכנס כתובת לחיפוש');
       return;
     }
-    setError('');
+    setSearchError('');
     setSearching(true);
     try {
       const response = await fetch(
@@ -61,7 +53,7 @@ export default function SettingsScreen() {
       );
       const data: NominatimResult[] = await response.json();
       if (data.length === 0) {
-        setError('לא נמצאה כתובת. נסה שוב');
+        setSearchError('לא נמצאה כתובת. נסה שוב');
         setLocationName('');
         setLatitude(null);
         setLongitude(null);
@@ -72,60 +64,40 @@ export default function SettingsScreen() {
         setLongitude(parseFloat(data[0].lon));
       }
     } catch {
-      setError('שגיאה בחיפוש מיקום');
+      setSearchError('שגיאה בחיפוש מיקום');
     } finally {
       setSearching(false);
     }
   };
 
   const handleSave = async () => {
-    if (isGabbai && !synagogueName.trim()) {
-      setError('שם בית כנסת הוא שדה חובה לגבאי');
+    if (!synagogueName.trim()) {
+      setSaveError('שם בית כנסת הוא שדה חובה לגבאי');
       return;
     }
-    if (isGabbai && (latitude === null || longitude === null)) {
-      setError('חפש ובחר מיקום');
+    if (latitude === null || longitude === null) {
+      setSaveError('חפש ובחר מיקום');
       return;
     }
-    if (isGabbai) {
-      const cleaned = phone.replace(/[\s\-()]/g, '');
-      if (!/^(05\d{8}|\+9725\d{8})$/.test(cleaned)) {
-        setError('הכנס מספר טלפון ישראלי תקין');
-        return;
-      }
-    }
-    if (!isGabbai && selectedNusach.length === 0) {
-      setError('בחר לפחות נוסח אחד');
+    const cleaned = phone.replace(/[\s\-()]/g, '');
+    if (!/^(05\d{8}|\+9725\d{8})$/.test(cleaned)) {
+      setSaveError('הכנס מספר טלפון ישראלי תקין');
       return;
     }
 
-    setError('');
+    setSaveError('');
     setSaving(true);
     try {
-      const data: Record<string, unknown> = {
-        role,
-      };
-
-      if (isGabbai) {
-        data.synagogue_name = synagogueName.trim();
-        data.address = locationName;
-        data.latitude = latitude;
-        data.longitude = longitude;
-        data.phone = phone.replace(/[\s\-()]/g, '');
-      } else {
-        data.nusach = selectedNusach;
-      }
-
-      await updateProfile(data);
-
-      const roleChanged = profile?.role !== role;
-      if (roleChanged) {
-        router.replace('/(app)');
-      } else {
-        router.back();
-      }
+      await updateProfile({
+        synagogue_name: synagogueName.trim(),
+        address: locationName,
+        latitude,
+        longitude,
+        phone: cleaned,
+      });
+      router.back();
     } catch (e: any) {
-      setError(e.message || 'שגיאה בשמירת השינויים');
+      setSaveError(e.message || 'שגיאה בשמירת השינויים');
     } finally {
       setSaving(false);
     }
@@ -149,103 +121,65 @@ export default function SettingsScreen() {
         keyboardShouldPersistTaps="handled"
       >
         <Text variant="titleMedium" style={styles.label}>
-          תפקיד
+          שם בית כנסת
         </Text>
-        <SegmentedButtons
-          value={role}
-          onValueChange={(val) => setRole(val as UserRole)}
-          buttons={[
-            { value: 'gabbai', label: 'גבאי' },
-            { value: 'baal_kriya', label: 'בעל קריאה' },
-          ]}
-          style={styles.segmented}
+        <TextInput
+          value={synagogueName}
+          onChangeText={setSynagogueName}
+          mode="outlined"
+          style={styles.input}
         />
 
-        {isGabbai && (
-          <>
-            <Text variant="titleMedium" style={styles.label}>
-              שם בית כנסת
+        <Text variant="titleMedium" style={styles.label}>
+          מיקום בית הכנסת
+        </Text>
+
+        <TextInput
+          label="הכנס כתובת חדשה לחיפוש"
+          value={locationQuery}
+          onChangeText={setLocationQuery}
+          mode="outlined"
+          style={styles.searchInput}
+        />
+        <Button
+          mode="contained-tonal"
+          onPress={searchLocation}
+          loading={searching}
+          disabled={searching}
+          style={styles.searchButton}
+          icon="magnify"
+        >
+          חפש
+        </Button>
+
+        {!!locationName && (
+          <Surface style={styles.locationResult} elevation={1}>
+            <Text variant="bodyMedium" style={styles.locationText}>
+              {locationName}
             </Text>
-            <TextInput
-              value={synagogueName}
-              onChangeText={setSynagogueName}
-              mode="outlined"
-              style={styles.input}
-            />
-
-            <Text variant="titleMedium" style={styles.label}>
-              מיקום בית הכנסת
-            </Text>
-
-            <TextInput
-              label="הכנס כתובת חדשה לחיפוש"
-              value={locationQuery}
-              onChangeText={setLocationQuery}
-              mode="outlined"
-              style={styles.searchInput}
-            />
-            <Button
-              mode="contained-tonal"
-              onPress={searchLocation}
-              loading={searching}
-              disabled={searching}
-              style={styles.searchButton}
-              icon="magnify"
-            >
-              חפש
-            </Button>
-
-            {!!locationName && (
-              <Surface style={styles.locationResult} elevation={1}>
-                <Text variant="bodyMedium" style={styles.locationText}>
-                  {locationName}
-                </Text>
-              </Surface>
-            )}
-
-            <Text variant="titleMedium" style={styles.label}>
-              מספר טלפון לוואטסאפ
-            </Text>
-            <TextInput
-              value={phone}
-              onChangeText={setPhone}
-              mode="outlined"
-              style={styles.input}
-              keyboardType="phone-pad"
-            />
-          </>
+          </Surface>
         )}
 
-        {!isGabbai && (
-          <>
-            <Text variant="titleMedium" style={styles.label}>
-              באיזה נוסח/ים אתה יודע לקרוא? (ניתן לבחור כמה)
-            </Text>
-            <View style={styles.chipRow}>
-              {NUSACH_OPTIONS.map((n) => (
-                <Chip
-                  key={n}
-                  selected={selectedNusach.includes(n)}
-                  onPress={() =>
-                    setSelectedNusach((prev) =>
-                      prev.includes(n)
-                        ? prev.filter((x) => x !== n)
-                        : [...prev, n],
-                    )
-                  }
-                  showSelectedCheck
-                  style={styles.nusachChip}
-                >
-                  {n}
-                </Chip>
-              ))}
-            </View>
-          </>
-        )}
-
-        {!!error && (
+        {!!searchError && (
           <HelperText type="error" visible style={styles.errorHelper}>
-            {error}
+            {searchError}
+          </HelperText>
+        )}
+
+        <Text variant="titleMedium" style={styles.label}>
+          מספר טלפון לוואטסאפ
+        </Text>
+        <TextInput
+          value={phone}
+          onChangeText={setPhone}
+          mode="outlined"
+          style={styles.input}
+          keyboardType="phone-pad"
+        />
+
+        {!!saveError && (
+          <HelperText type="error" visible style={styles.errorHelper}>
+            {saveError}
           </HelperText>
         )}
 
@@ -298,9 +232,6 @@ const styles = StyleSheet.create({
   input: {
     marginBottom: 4,
   },
-  segmented: {
-    marginBottom: 4,
-  },
   errorHelper: {},
   saveButton: {
     marginTop: 32,
@@ -325,13 +256,4 @@ const styles = StyleSheet.create({
     marginBottom: 16,
   },
   locationText: {},
-  chipRow: {
-    flexDirection: 'row',
-    flexWrap: 'wrap',
-    gap: 8,
-    marginBottom: 16,
-  },
-  nusachChip: {
-    marginBottom: 4,
-  },
 });
